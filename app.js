@@ -389,7 +389,7 @@ function resetLockTimer() {
 // ---------------------------------------------------------------- views
 function viewSetup() {
   return `<div class="auth"><div class="card">
-  <div class="brandmark">B</div>
+  <img class="brandmark" src="logo.svg" alt="">
   <h1>Bills</h1>
   <p class="muted">Monthly payments, encrypted in your browser and stored in your own GitHub repository.</p>
   <form data-form="setup" autocomplete="off">
@@ -410,7 +410,7 @@ function viewSetup() {
 function viewUnlock() {
   const c = S.cfg;
   return `<div class="auth"><div class="card">
-  <div class="brandmark">B</div>
+  <img class="brandmark" src="logo.svg" alt="">
   <h1>Bills</h1>
   <p class="muted">${esc(c.owner)}/${esc(c.repo)} · ${esc(c.path)}</p>
   <form data-form="unlock">
@@ -424,7 +424,7 @@ function viewUnlock() {
 function viewShell() {
   const tabs = [['cycle', 'This cycle'], ['history', 'History'], ['payees', 'Payees'], ['settings', 'Settings']];
   return `<header class="top">
-    <div class="brand"><span class="brandmark sm">B</span>Bills</div>
+    <div class="brand"><img class="brandmark sm" src="logo.svg" alt="">Bills</div>
     <nav>${tabs.map(([v, l]) => `<button class="tab ${S.view === v ? 'on' : ''}" data-act="tab" data-v="${v}">${l}</button>`).join('')}</nav>
     <div class="right"><span id="sync" class="sync ${S.syncState}">${esc(S.syncText)}</span><button class="ghost" data-act="lock">Lock</button></div>
   </header>
@@ -572,7 +572,7 @@ function importPreviewHtml() {
   const dup = pv.filter(c => exist.has(c.date)).length;
   return `<div class="preview">
     <p><strong>${pv.length} cycles</strong>, ${rows} rows found${dup ? `, ${dup} already imported (will be skipped)` : ''}: ${pv.map(c => fmtDate(c.date)).join(', ')}.</p>
-    <p class="muted">Rename to merge payees, e.g. change “FAB CC” to “FAB Share CC”. Leave a name empty to drop those rows.</p>
+    <p class="muted">Rename to merge payees that changed name over time (type the same name for both). Leave a name empty to drop those rows.</p>
     <div class="renames">${names.map(n => `<label><span>${esc(n)}</span><input data-rename="${esc(n)}" value="${esc(n)}"></label>`).join('')}</div>
     <div class="row"><button class="primary" data-act="importRun">Import</button><button class="ghost" data-act="importCancel">Cancel</button></div>
   </div>`;
@@ -582,7 +582,7 @@ function viewSettings() {
   return `<section class="card">
     <h2>Import from Google Sheet</h2>
     <p class="muted">In the sheet, select columns A to E (date, payee, amount, note, status) for all rows, copy, and paste below.</p>
-    ${S.importPreview ? importPreviewHtml() : `<textarea id="importText" rows="7" placeholder="2-Jan-2026&#9;ADCB CC&#9;AED 2,581.09&#9;&#9;DONE"></textarea>
+    ${S.importPreview ? importPreviewHtml() : `<textarea id="importText" rows="7" placeholder="1-Jan-2026&#9;Credit card&#9;AED 1,000.00&#9;note&#9;DONE"></textarea>
     <div class="row"><button class="ghost" data-act="importPreview">Preview import</button></div>`}
   </section>
   <section class="card">
