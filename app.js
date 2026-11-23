@@ -15,6 +15,14 @@ const MIN_PW = 10;
 
 const TYPES = { card: 'Credit card', utility: 'Utility', rent: 'Rent', loan: 'Loan / EMI', transfer: 'Transfer', personal: 'Personal', other: 'Other' };
 const STATUS = { pending: 'Pending', done: 'Done', skipped: 'Skipped', na: 'Not due' };
+const ICONS = {
+  cycle: '<svg class="ico" viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>',
+  history: '<svg class="ico" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  payees: '<svg class="ico" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></svg>',
+  settings: '<svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  lock: '<svg class="ico" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+};
+const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 720;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // ---------------------------------------------------------------- utils
@@ -245,7 +253,7 @@ const S = {
   cfg: null, key: null, token: null, sha: null, data: null,
   view: 'cycle', cycleId: null, panel: null, chartPayee: '',
   dirty: false, saving: false, saveAgain: false, saveTimer: null, retryTimer: null,
-  conflict: false, lockTimer: null, importPreview: null, repoPrivate: null,
+  conflict: false, lockTimer: null, importPreview: null, openItem: null, repoPrivate: null,
   syncState: 'ok', syncText: '',
 };
 function loadCfg() { try { return JSON.parse(localStorage.getItem(LS_CONFIG)); } catch (e) { return null; } }
@@ -425,8 +433,8 @@ function viewShell() {
   const tabs = [['cycle', 'This cycle'], ['history', 'History'], ['payees', 'Payees'], ['settings', 'Settings']];
   return `<header class="top">
     <div class="brand"><img class="brandmark sm" src="logo.svg" alt="">Bills</div>
-    <nav>${tabs.map(([v, l]) => `<button class="tab ${S.view === v ? 'on' : ''}" data-act="tab" data-v="${v}">${l}</button>`).join('')}</nav>
-    <div class="right"><span id="sync" class="sync ${S.syncState}">${esc(S.syncText)}</span><button class="ghost" data-act="lock">Lock</button></div>
+    <nav class="tabs">${tabs.map(([v, l]) => `<button class="tab ${S.view === v ? 'on' : ''}" data-act="tab" data-v="${v}">${ICONS[v]}<span>${l}</span></button>`).join('')}</nav>
+    <div class="right"><span id="sync" class="sync ${S.syncState}" title="${esc(S.syncText)}">${esc(S.syncText)}</span><button class="ghost lockbtn" data-act="lock" aria-label="Lock">${ICONS.lock}<span>Lock</span></button></div>
   </header>
   ${S.conflict ? `<div class="banner warn"><span>The vault on GitHub changed on another device since this copy was loaded.</span>
     <span><button data-act="resolveRemote">Load GitHub version</button> <button class="danger" data-act="resolveMine">Overwrite with this copy</button></span></div>` : ''}
@@ -436,7 +444,9 @@ function viewShell() {
 }
 function summaryHtml(c) {
   const t = cycleTotals(c);
-  return `<div class="stat"><div class="k">Total this cycle</div><div class="v">${money(t.total)}</div><div class="s">${t.count} items</div></div>
+  const pct = t.total ? Math.round((t.paid / t.total) * 100) : 0;
+  return `<div class="progwrap"><progress class="prog" max="100" value="${pct}"></progress><span>${pct}% paid</span></div>
+  <div class="stat"><div class="k">Total this cycle</div><div class="v">${money(t.total)}</div><div class="s">${t.count} items</div></div>
   <div class="stat ok"><div class="k">Paid</div><div class="v">${money(t.paid)}</div><div class="s">${t.doneN} of ${t.count} done</div></div>
   <div class="stat ${t.pendingN ? 'warn' : ''}"><div class="k">Still to pay</div><div class="v">${money(t.pending)}</div><div class="s">${t.pendingN} pending</div></div>
   <div class="stat"><div class="k">Paid from bank</div><div class="v">${money(t.bank)}</div><div class="s">${money(t.card)} put on cards</div></div>`;
@@ -445,16 +455,19 @@ function viaOptions(sel) {
   const opts = [['bank', 'Bank'], ['card', 'Card (any)']].concat(sortedPayees().filter(p => p.type === 'card').map(p => [p.id, p.name]));
   return opts.map(([v, l]) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(l)}</option>`).join('');
 }
+function viaLabel(v) { return !v || v === 'bank' ? 'Bank' : v === 'card' ? 'Card' : (payee(v)?.name || 'Card'); }
+function subText(it) { return [STATUS[it.status], it.status === 'done' ? viaLabel(it.paidVia) : '', it.note].filter(Boolean).join(' · '); }
 function itemRow(c, it) {
   const p = payee(it.payeeId);
-  return `<div class="item st-${it.status}" data-cycle="${c.id}" data-item="${it.id}">
-    <input class="chk" type="checkbox" data-f="done" ${it.status === 'done' ? 'checked' : ''} aria-label="Mark done">
-    <div class="name">${esc(p ? p.name : 'Unknown')}<span class="tag">${esc(p ? TYPES[p.type] : '')}</span></div>
+  const open = S.openItem === it.id;
+  return `<div class="item st-${it.status}${open ? ' open' : ''}" data-cycle="${c.id}" data-item="${it.id}">
+    <input class="chk" type="checkbox" data-f="done" ${it.status === 'done' ? 'checked' : ''} aria-label="Mark ${esc(p ? p.name : '')} done">
+    <button type="button" class="name" data-act="toggleItem" aria-expanded="${open}"><span class="nm">${esc(p ? p.name : 'Unknown')}</span><span class="tag">${esc(p ? TYPES[p.type] : '')}</span><span class="sub">${esc(subText(it))}</span></button>
     <input class="amt" type="number" step="0.01" min="0" inputmode="decimal" data-f="amount" value="${it.amount ? Number(it.amount).toFixed(2) : ''}" placeholder="0.00" aria-label="Amount">
     <select class="st" data-f="status" aria-label="Status">${Object.entries(STATUS).map(([v, l]) => `<option value="${v}" ${v === it.status ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <select class="via" data-f="paidVia" aria-label="Paid with">${viaOptions(it.paidVia || 'bank')}</select>
     <input class="note" data-f="note" value="${esc(it.note)}" placeholder="Note" aria-label="Note">
-    <button class="icon del" data-act="delItem" title="Remove from this cycle" aria-label="Remove">×</button>
+    <button class="icon del" data-act="delItem" title="Remove from this cycle" aria-label="Remove"><span class="x">×</span><span class="rm">Remove from cycle</span></button>
   </div>`;
 }
 function newCyclePanel() {
@@ -471,7 +484,7 @@ function newCyclePanel() {
 }
 function viewCycle() {
   const c = currentCycle();
-  const startBtn = `<button class="primary" data-act="panel" data-p="newCycle">+ Start new cycle</button>`;
+  const startBtn = `<button class="primary" data-act="panel" data-p="newCycle">+ New cycle</button>`;
   if (!c) {
     return `${S.panel === 'newCycle' ? newCyclePanel() : ''}
     <div class="empty"><h2>No cycles yet</h2><p>Start your first payday cycle, or import your Google Sheet history from Settings.</p>
@@ -482,22 +495,23 @@ function viewCycle() {
   const options = sortedPayees().filter(p => !used.has(p.id)).map(p => `<option value="${esc(p.name)}">`).join('');
   return `${S.panel === 'newCycle' ? newCyclePanel() : ''}
   <div class="cyclehead">
-    <div>
-      <select id="cycleSelect" aria-label="Choose cycle">${cycles.map(x => `<option value="${x.id}" ${x.id === c.id ? 'selected' : ''}>${fmtDate(x.date)} — ${fmtMonth(x.forMonth)}</option>`).join('')}</select>
-      <div class="meta">
-        <label>Paid on <input type="date" data-cf="date" value="${c.date}"></label>
-        <label>Covers <input type="month" data-cf="forMonth" value="${c.forMonth}"></label>
-      </div>
-    </div>
-    <div class="row">${startBtn}<button class="ghost danger" data-act="delCycle">Delete cycle</button></div>
+    <select id="cycleSelect" aria-label="Choose cycle">${cycles.map(x => `<option value="${x.id}" ${x.id === c.id ? 'selected' : ''}>${fmtDate(x.date)} · ${fmtMonth(x.forMonth)}</option>`).join('')}</select>
+    ${startBtn}
   </div>
+  <details class="cyclemeta"${isNarrow() ? '' : ' open'}><summary>Cycle details</summary>
+    <div class="meta">
+      <label>Paid on <input type="date" data-cf="date" value="${c.date}"></label>
+      <label>Covers <input type="month" data-cf="forMonth" value="${c.forMonth}"></label>
+      <button class="ghost danger sm" data-act="delCycle">Delete cycle</button>
+    </div>
+  </details>
   <section id="summary" class="stats">${summaryHtml(c)}</section>
   <section class="list">
     <div class="item head"><span></span><span>Payee</span><span>Amount</span><span class="st">Status</span><span class="via">Paid with</span><span class="note">Note</span><span></span></div>
     ${c.items.map(it => itemRow(c, it)).join('') || '<p class="muted pad">No items in this cycle.</p>'}
   </section>
   <form class="addrow" data-form="addItem">
-    <input name="name" list="payeeList" placeholder="Add a payee to this cycle (existing or new one-off)…" required>
+    <input name="name" list="payeeList" placeholder="Add payee to this cycle…" required>
     <datalist id="payeeList">${options}</datalist>
     <input name="amount" type="number" step="0.01" min="0" placeholder="Amount">
     <button class="ghost">Add</button>
@@ -505,9 +519,11 @@ function viewCycle() {
 }
 function chartSvg(points) {
   if (!points.length) return '<p class="muted">Nothing to chart yet.</p>';
-  const W = 760, H = 240, L = 8, R = 8, T = 22, B = 34;
+  const narrow = isNarrow();
+  const W = narrow ? 380 : 760, H = narrow ? 220 : 240, L = 4, R = 4, T = 22, B = 34;
   const max = Math.max(1, ...points.map(p => p.value));
   const slot = (W - L - R) / points.length;
+  const tight = slot < 46;
   const bw = Math.min(46, slot * 0.66);
   const bars = points.map((p, i) => {
     const h = (p.value / max) * (H - T - B);
@@ -516,7 +532,7 @@ function chartSvg(points) {
     return `<g><title>${esc(p.title)}: ${money(p.value)}</title>
       <rect class="bar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="3"></rect>
       <text class="val" x="${(x + bw / 2).toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle">${short(p.value)}</text>
-      <text class="lbl" x="${(x + bw / 2).toFixed(1)}" y="${H - B + 18}" text-anchor="middle">${esc(p.label)}</text></g>`;
+      <text class="lbl" x="${(x + bw / 2).toFixed(1)}" y="${H - B + 18}" text-anchor="middle">${esc(tight ? p.label.split(' ')[0] : p.label)}</text></g>`;
   }).join('');
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Totals per cycle"><line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"></line>${bars}</svg>`;
 }
@@ -540,6 +556,7 @@ function viewHistory() {
   </section>
   <section class="card">
     <h2>All cycles</h2>
+    <div class="clist">${cycles.map(c => { const t = cycleTotals(c); return `<button class="crow" data-act="openCycle" data-id="${c.id}"><span class="cl"><b>${fmtDate(c.date)}</b><small>Covers ${fmtMonth(c.forMonth)}</small></span><span class="cr"><b>${money(t.total)}</b><small class="${t.pendingN ? 'warnt' : 'okt'}">${t.pendingN ? `${t.pendingN} pending · ${money(t.pending)}` : 'All paid'}</small></span><span class="chev">›</span></button>`; }).join('') || '<p class="muted">No cycles yet.</p>'}</div>
     <table class="tbl"><thead><tr><th>Paid on</th><th>Covers</th><th class="r">Total</th><th class="r">Paid</th><th class="r">Pending</th><th></th></tr></thead>
     <tbody>${cycles.map(c => { const t = cycleTotals(c); return `<tr><td>${fmtDate(c.date)}</td><td>${fmtMonth(c.forMonth)}</td><td class="r">${money(t.total)}</td><td class="r">${money(t.paid)}</td><td class="r ${t.pendingN ? 'warnt' : ''}">${t.pendingN ? `${t.pendingN} · ${money(t.pending)}` : '—'}</td><td><button class="ghost sm" data-act="openCycle" data-id="${c.id}">Open</button></td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">No cycles yet.</td></tr>'}</tbody></table>
   </section>`;
@@ -550,9 +567,9 @@ function viewPayees() {
     <div class="cardhead"><h2>Payees</h2><span class="muted">Active payees are added automatically to each new cycle.</span></div>
     <div class="prow head"><span>Name</span><span>Type</span><span>Fixed amount</span><span>Active</span><span></span></div>
     ${ps.map((p, i) => `<div class="prow" data-pid="${p.id}">
-      <input data-pf="name" value="${esc(p.name)}" aria-label="Name">
-      <select data-pf="type" aria-label="Type">${Object.entries(TYPES).map(([v, l]) => `<option value="${v}" ${v === p.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <input data-pf="defaultAmount" type="number" step="0.01" min="0" value="${p.defaultAmount ?? ''}" placeholder="varies" aria-label="Fixed amount">
+      <input class="pname" data-pf="name" value="${esc(p.name)}" aria-label="Name">
+      <select class="ptype" data-pf="type" aria-label="Type">${Object.entries(TYPES).map(([v, l]) => `<option value="${v}" ${v === p.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <input class="pamt" data-pf="defaultAmount" type="number" step="0.01" min="0" value="${p.defaultAmount ?? ''}" placeholder="varies" aria-label="Fixed amount">
       <label class="switch"><input type="checkbox" data-pf="active" ${p.active ? 'checked' : ''}><span>${p.active ? 'Active' : 'Off'}</span></label>
       <span class="btns"><button class="icon" data-act="pUp" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button><button class="icon" data-act="pDown" ${i === ps.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button><button class="icon del" data-act="pDel" aria-label="Delete">×</button></span>
     </div>`).join('') || '<p class="muted">No payees yet.</p>'}
@@ -697,6 +714,13 @@ async function onClick(e) {
       const c = currentCycle(); if (!c || !confirm(`Delete the cycle paid on ${fmtDate(c.date)}? This cannot be undone.`)) return;
       S.data.cycles = S.data.cycles.filter(x => x.id !== c.id); S.cycleId = null; markDirty(); render(); break;
     }
+    case 'toggleItem': {
+      const row = b.closest('.item'); const id = row.dataset.item;
+      S.openItem = S.openItem === id ? null : id;
+      document.querySelectorAll('.item.open').forEach(r => { if (r !== row) { r.classList.remove('open'); r.querySelector('.name').setAttribute('aria-expanded', 'false'); } });
+      row.classList.toggle('open', S.openItem === id); b.setAttribute('aria-expanded', String(S.openItem === id));
+      break;
+    }
     case 'delItem': {
       const row = b.closest('.item'); const c = cycleById(row.dataset.cycle);
       c.items = c.items.filter(i => i.id !== row.dataset.item); markDirty(); render(); break;
@@ -777,7 +801,8 @@ function onChange(e) {
     else if (f === 'status') it.status = el.value;
     else if (f === 'paidVia') it.paidVia = el.value;
     else if (f === 'note') it.note = el.value.trim();
-    row.className = 'item st-' + it.status;
+    row.className = 'item st-' + it.status + (S.openItem === it.id ? ' open' : '');
+    row.querySelector('.sub').textContent = subText(it);
     row.querySelector('[data-f=done]').checked = it.status === 'done';
     row.querySelector('[data-f=status]').value = it.status;
     document.getElementById('summary').innerHTML = summaryHtml(c);
@@ -806,6 +831,8 @@ function init() {
   ['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, resetLockTimer, { passive: true }));
   document.addEventListener('visibilitychange', () => { if (document.hidden && S.dirty) save(); });
   window.addEventListener('beforeunload', e => { if (S.dirty || S.saving) { save(); e.preventDefault(); e.returnValue = ''; } });
+  let wasNarrow = isNarrow();
+  window.addEventListener('resize', () => { const n = isNarrow(); if (n !== wasNarrow) { wasNarrow = n; if (S.key && S.view === 'history') render(); } });
   render();
 }
 if (typeof document !== 'undefined') init();
