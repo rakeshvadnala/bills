@@ -57,8 +57,8 @@ button.icon.del:hover { color: var(--bad); }
 /* auth */
 .auth { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
 .auth .card { width: 100%; max-width: 430px; }
-.brandmark { width: 44px; height: 44px; border-radius: 12px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 800; font-size: 1.3rem; margin-bottom: 14px; }
-.brandmark.sm { width: 26px; height: 26px; border-radius: 7px; font-size: .9rem; margin: 0; }
+.brandmark { display: block; width: 52px; height: 52px; margin-bottom: 14px; }
+.brandmark.sm { width: 28px; height: 28px; margin: 0; }
 .msg { padding: 8px 10px; border-radius: 8px; font-size: .9rem; }
 .msg.bad { background: var(--bad-soft); color: var(--bad); }
 .msg.good { background: var(--ok-soft); color: var(--ok); }
