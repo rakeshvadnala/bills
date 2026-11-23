@@ -136,12 +136,17 @@ function guessType(name) {
 /** Parses rows copied from the Google Sheet (tab separated: Date, Name, Amount, Note, Status). */
 function parseSheet(text) {
   const cycles = [];
+  const byDate = new Map();
   let cur = null;
   for (const raw of String(text).split(/\r?\n/)) {
     const cols = raw.split('\t');
     if (cols.every(c => !c.trim())) continue;
     const d = parseDate(cols[0]);
-    if (d) { cur = { date: d, forMonth: guessForMonth(d), rows: [] }; cycles.push(cur); }
+    if (d) {
+      // Same date again (date repeated on every row) -> same cycle
+      cur = byDate.get(d);
+      if (!cur) { cur = { date: d, forMonth: guessForMonth(d), rows: [] }; cycles.push(cur); byDate.set(d, cur); }
+    }
     const name = (cols[1] || '').trim();
     if (!cur || !name) continue; // totals lines have no name
     const amount = parseAmount(cols[2]);
@@ -185,7 +190,7 @@ function applyImport(data, parsed, renames) {
       if (!seen.has(p.id)) seen.set(p.id, []);
       seen.get(p.id).push({ date: pc.date, amount: r.amount });
     }
-    data.cycles.push(cycle); added++;
+    data.cycles.push(cycle); existingDates.add(pc.date); added++;
   }
   // Infer active flag and fixed amounts from history
   const dates = [...new Set(data.cycles.map(c => c.date))].sort();
@@ -203,6 +208,23 @@ function applyImport(data, parsed, renames) {
   }
   return { added, skipped, newPayees };
 }
+
+/** Merges cycles that share the same payment date into one. Returns how many cycles were removed. */
+function mergeSameDateCycles(data) {
+  const keep = new Map(); let removed = 0;
+  for (const c of data.cycles.slice().sort((a, b) => a.date.localeCompare(b.date))) {
+    const k = keep.get(c.date);
+    if (!k) { keep.set(c.date, c); continue; }
+    for (const it of c.items) if (!k.items.some(i => i.payeeId === it.payeeId)) k.items.push(it);
+    removed++;
+  }
+  if (removed) {
+    const ids = new Set([...keep.values()].map(c => c.id));
+    data.cycles = data.cycles.filter(c => ids.has(c.id));
+  }
+  return removed;
+}
+function duplicateDateCount(data) { return data.cycles.length - new Set(data.cycles.map(c => c.date)).size; }
 
 // ---------------------------------------------------------------- data helpers
 function emptyData() { return { version: 1, payees: [], cycles: [], updatedAt: new Date().toISOString() }; }
@@ -408,6 +430,7 @@ function viewShell() {
   </header>
   ${S.conflict ? `<div class="banner warn"><span>The vault on GitHub changed on another device since this copy was loaded.</span>
     <span><button data-act="resolveRemote">Load GitHub version</button> <button class="danger" data-act="resolveMine">Overwrite with this copy</button></span></div>` : ''}
+  ${duplicateDateCount(S.data) ? `<div class="banner warn"><span>${duplicateDateCount(S.data)} extra cycle(s) share a payment date with another cycle.</span><span><button data-act="mergeDup">Merge cycles with the same date</button></span></div>` : ''}
   ${S.repoPrivate === false ? `<div class="banner">Your data repo is public. The vault is still encrypted, but making the repo private is recommended.</div>` : ''}
   <main>${({ cycle: viewCycle, history: viewHistory, payees: viewPayees, settings: viewSettings })[S.view]()}</main>`;
 }
@@ -696,6 +719,10 @@ async function onClick(e) {
       if (!parsed.length) { alert('No cycles found. Make sure the first column has dates like 2-Jan-2026 and columns are tab separated (copy straight from the sheet).'); return; }
       S.importPreview = parsed; render(); break;
     }
+    case 'mergeDup': {
+      const n = mergeSameDateCycles(S.data); S.cycleId = null;
+      if (n) markDirty(); render(); alert(`Merged ${n} duplicate cycle(s).`); break;
+    }
     case 'importCancel': S.importPreview = null; render(); break;
     case 'importRun': {
       const renames = {};
@@ -782,4 +809,4 @@ function init() {
   render();
 }
 if (typeof document !== 'undefined') init();
-if (typeof module !== 'undefined') module.exports = { deriveKey, encryptJSON, decryptJSON, sealWith, openVault, parseSheet, applyImport, emptyData, cycleTotals, guessForMonth, AAD_TOKEN };
+if (typeof module !== 'undefined') module.exports = { deriveKey, encryptJSON, decryptJSON, sealWith, openVault, parseSheet, applyImport, mergeSameDateCycles, emptyData, cycleTotals, guessForMonth, AAD_TOKEN };
