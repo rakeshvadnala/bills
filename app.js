@@ -253,7 +253,7 @@ const S = {
   cfg: null, key: null, token: null, sha: null, data: null,
   view: 'cycle', cycleId: null, panel: null, chartPayee: '',
   dirty: false, saving: false, saveAgain: false, saveTimer: null, retryTimer: null,
-  conflict: false, lockTimer: null, importPreview: null, openItem: null, repoPrivate: null,
+  conflict: false, lockTimer: null, importPreview: null, openItem: null, openPayee: null, year: null, repoPrivate: null,
   syncState: 'ok', syncText: '',
 };
 function loadCfg() { try { return JSON.parse(localStorage.getItem(LS_CONFIG)); } catch (e) { return null; } }
@@ -297,7 +297,7 @@ async function save() {
   } catch (e) {
     S.dirty = true;
     if (e.conflict) { S.conflict = true; setSync('error', 'Conflict'); render(); }
-    else { setSync('error', 'Not saved — ' + e.message + '. Retrying…'); S.retryTimer = setTimeout(save, 20000); }
+    else { setSync('error', navigator.onLine === false ? 'Offline — saved on this device, will sync' : 'Not saved — ' + e.message + '. Retrying…'); S.retryTimer = setTimeout(save, 20000); }
   } finally {
     S.saving = false;
     if (S.saveAgain) { S.saveAgain = false; save(); }
@@ -394,6 +394,113 @@ function resetLockTimer() {
   if (min > 0) S.lockTimer = setTimeout(lock, min * 60000);
 }
 
+// ---------------------------------------------------------------- features: due dates, pre-fill, instalments, insights
+function addMonths(ym, n) { let [y, m] = ym.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${pad(m)}`; }
+function today0() { const t = new Date(); t.setHours(0, 0, 0, 0); return t; }
+/** Next occurrence of the payee's due day on or after the cycle's payment date. */
+function dueDate(c, p) {
+  if (!p || !p.dueDay) return null;
+  const [y, m, d] = c.date.split('-').map(Number);
+  let yy = y, mm = m;
+  if (p.dueDay < d) { mm++; if (mm > 12) { mm = 1; yy++; } }
+  const last = new Date(yy, mm, 0).getDate();
+  return new Date(yy, mm - 1, Math.min(p.dueDay, last));
+}
+function dueInfo(c, it, p) {
+  if (it.status !== 'pending') return null;
+  const dd = dueDate(c, p); if (!dd) return null;
+  const diff = Math.round((dd - today0()) / 86400000);
+  if (diff < 0) return { cls: 'bad', t: `Overdue ${-diff}d`, overdue: true };
+  if (diff === 0) return { cls: 'bad', t: 'Due today' };
+  if (diff <= 5) return { cls: 'warn', t: `Due in ${diff}d` };
+  return { cls: '', t: `Due ${dd.getDate()} ${MONTHS[dd.getMonth()]}` };
+}
+/** Typical amount: median of the payee's last 6 non-zero amounts before this cycle. */
+function usualAmount(p, beforeDate) {
+  const amts = S.data.cycles.filter(c => c.date < beforeDate).sort((a, b) => b.date.localeCompare(a.date))
+    .flatMap(c => c.items.filter(i => i.payeeId === p.id && !i.est && Number(i.amount) > 0 && i.status !== 'skipped' && i.status !== 'na').map(i => Number(i.amount))).slice(0, 6);
+  if (amts.length < 2) return null;
+  const sorted = amts.slice().sort((a, b) => a - b); const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+function unusualInfo(c, it, p) {
+  if (!p || it.est || !(Number(it.amount) > 0) || it.status === 'na' || it.status === 'skipped') return null;
+  const base = usualAmount(p, c.date); if (!base) return null;
+  const a = Number(it.amount);
+  if (a > base * 1.25 && a - base >= 100) return { pct: Math.round((a / base - 1) * 100), base };
+  return null;
+}
+/** Amount from the most recent cycle that included this payee (0 if it was not due or skipped there). */
+function lastAmount(p) {
+  for (const c of sortedCycles()) {
+    const it = c.items.find(i => i.payeeId === p.id);
+    if (it) return it.status === 'na' || it.status === 'skipped' ? 0 : Number(it.amount) || 0;
+  }
+  return 0;
+}
+/** Instalment plan progress for a payee. */
+function planInfo(p, uptoCycle) {
+  const pl = p && p.plan; if (!pl || !pl.months) return null;
+  const start = pl.start || todayISO().slice(0, 7);
+  const end = addMonths(start, pl.months - 1);
+  const done = S.data.cycles.filter(c => c.forMonth >= start && (!uptoCycle || c.date < uptoCycle.date))
+    .filter(c => c.items.some(i => i.payeeId === p.id && i.status === 'done')).length;
+  return { months: pl.months, start, end, done, remaining: Math.max(0, pl.months - done) };
+}
+function badgesHtml(c, it) {
+  const p = payee(it.payeeId); const out = [];
+  const due = dueInfo(c, it, p); if (due) out.push(`<span class="badge ${due.cls}">${esc(due.t)}</span>`);
+  const pl = planInfo(p, c); if (pl) { const n = Math.min(pl.months, pl.done + 1); out.push(`<span class="badge plan">${it.status === 'done' ? n : pl.done + 1} of ${pl.months}</span>`); }
+  if (it.est) out.push('<span class="badge est" title="Pre-filled from last cycle">est.</span>');
+  const un = unusualInfo(c, it, p); if (un) out.push(`<span class="badge bad" title="Usual about ${esc(money(un.base))}">▲ ${un.pct}%</span>`);
+  return out.join('');
+}
+function icsText(s) { return String(s).replace(/\\/g, '\\\\').replace(/;/g, '\;').replace(/,/g, '\\,').replace(/\n/g, '\\n'); }
+function buildIcs() {
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const ymd = (y, m, d) => `${y}${pad(m)}${pad(d)}`;
+  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Bills//Reminders//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Bills'];
+  const alarm = (trigger, text) => ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsText(text)}`, `TRIGGER:${trigger}`, 'END:VALARM'];
+  const event = (id, day, summary, alarms, count) => {
+    const y = now.getFullYear(), m = now.getMonth() + 1;
+    const dd = day > 28 ? new Date(y, m, 0).getDate() : day;
+    L.push('BEGIN:VEVENT', `UID:${id}@bills`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${ymd(y, m, dd)}`,
+      `RRULE:FREQ=MONTHLY;BYMONTHDAY=${day > 28 ? -1 : day}${count ? ';COUNT=' + count : ''}`,
+      `SUMMARY:${icsText(summary)}`, 'TRANSP:TRANSPARENT', ...alarms.flat(), 'END:VEVENT');
+  };
+  const st = S.data.settings || {};
+  if (st.paydayDay) event('payday', st.paydayDay, 'Payday — start new Bills cycle', [alarm('PT9H', 'Payday: start a new Bills cycle')]);
+  let n = 0;
+  for (const p of sortedPayees().filter(x => x.active && x.dueDay)) {
+    const pl = planInfo(p);
+    if (pl && pl.remaining === 0) continue;
+    event('due-' + p.id, p.dueDay, `Pay ${p.name}`, [alarm('-P2DT15H', `${p.name} due in 2 days`), alarm('-PT15H', `${p.name} due tomorrow`)], pl ? pl.remaining : 0);
+    n++;
+  }
+  L.push('END:VCALENDAR');
+  return { text: L.join('\r\n') + '\r\n', count: n };
+}
+function yearStats(year) {
+  const cyc = S.data.cycles.filter(c => c.forMonth.startsWith(year));
+  const byType = {}, byPayee = new Map(), unusual = [];
+  let total = 0, income = 0, incomeN = 0;
+  for (const c of cyc) {
+    if (c.income) { income += Number(c.income); incomeN++; }
+    for (const it of c.items) {
+      if (it.status === 'na' || it.status === 'skipped') continue;
+      const a = Number(it.amount) || 0; if (!a) continue;
+      const p = payee(it.payeeId) || { id: '?', name: 'Unknown', type: 'other' };
+      total += a;
+      byType[p.type] = (byType[p.type] || 0) + a;
+      const r = byPayee.get(p.id) || { p, total: 0, n: 0, max: 0 };
+      r.total += a; r.n++; r.max = Math.max(r.max, a); byPayee.set(p.id, r);
+      const un = unusualInfo(c, it, p); if (un) unusual.push({ c, it, p, ...un });
+    }
+  }
+  return { cyc, total, income, incomeN, byType, byPayee: [...byPayee.values()].sort((a, b) => b.total - a.total), unusual };
+}
+
 // ---------------------------------------------------------------- views
 function viewSetup() {
   return `<div class="auth"><div class="card">
@@ -430,7 +537,7 @@ function viewUnlock() {
   </div></div>`;
 }
 function viewShell() {
-  const tabs = [['cycle', 'This cycle'], ['history', 'History'], ['payees', 'Payees'], ['settings', 'Settings']];
+  const tabs = [['cycle', 'This cycle'], ['history', 'Insights'], ['payees', 'Payees'], ['settings', 'Settings']];
   return `<header class="top">
     <div class="brand"><img class="brandmark sm" src="logo.svg" alt="">Bills</div>
     <nav class="tabs">${tabs.map(([v, l]) => `<button class="tab ${S.view === v ? 'on' : ''}" data-act="tab" data-v="${v}">${ICONS[v]}<span>${l}</span></button>`).join('')}</nav>
@@ -445,11 +552,13 @@ function viewShell() {
 function summaryHtml(c) {
   const t = cycleTotals(c);
   const pct = t.total ? Math.round((t.paid / t.total) * 100) : 0;
+  const overdue = c.items.filter(it => dueInfo(c, it, payee(it.payeeId))?.overdue).length;
   return `<div class="progwrap"><progress class="prog" max="100" value="${pct}"></progress><span>${pct}% paid</span></div>
   <div class="stat"><div class="k">Total this cycle</div><div class="v">${money(t.total)}</div><div class="s">${t.count} items</div></div>
   <div class="stat ok"><div class="k">Paid</div><div class="v">${money(t.paid)}</div><div class="s">${t.doneN} of ${t.count} done</div></div>
-  <div class="stat ${t.pendingN ? 'warn' : ''}"><div class="k">Still to pay</div><div class="v">${money(t.pending)}</div><div class="s">${t.pendingN} pending</div></div>
-  <div class="stat"><div class="k">Paid from bank</div><div class="v">${money(t.bank)}</div><div class="s">${money(t.card)} put on cards</div></div>`;
+  <div class="stat ${t.pendingN ? 'warn' : ''}"><div class="k">Still to pay</div><div class="v">${money(t.pending)}</div><div class="s">${t.pendingN} pending${overdue ? ` · <b class="badtext">${overdue} overdue</b>` : ''}</div></div>
+  <div class="stat"><div class="k">Paid from bank</div><div class="v">${money(t.bank)}</div><div class="s">${money(t.card)} put on cards</div></div>
+  ${c.income ? `<div class="stat wide ${c.income - t.total < 0 ? 'neg' : 'ok'}"><div class="k">Left after bills</div><div class="v">${money(c.income - t.total)}</div><div class="s">Income ${money(c.income)} − bills ${money(t.total)}</div></div>` : ''}`;
 }
 function viaOptions(sel) {
   const opts = [['bank', 'Bank'], ['card', 'Card (any)']].concat(sortedPayees().filter(p => p.type === 'card').map(p => [p.id, p.name]));
@@ -462,8 +571,8 @@ function itemRow(c, it) {
   const open = S.openItem === it.id;
   return `<div class="item st-${it.status}${open ? ' open' : ''}" data-cycle="${c.id}" data-item="${it.id}">
     <input class="chk" type="checkbox" data-f="done" ${it.status === 'done' ? 'checked' : ''} aria-label="Mark ${esc(p ? p.name : '')} done">
-    <button type="button" class="name" data-act="toggleItem" aria-expanded="${open}"><span class="nm">${esc(p ? p.name : 'Unknown')}</span><span class="tag">${esc(p ? TYPES[p.type] : '')}</span><span class="sub">${esc(subText(it))}</span></button>
-    <input class="amt" type="number" step="0.01" min="0" inputmode="decimal" data-f="amount" value="${it.amount ? Number(it.amount).toFixed(2) : ''}" placeholder="0.00" aria-label="Amount">
+    <button type="button" class="name" data-act="toggleItem" aria-expanded="${open}"><span class="nm">${esc(p ? p.name : 'Unknown')}</span><span class="tag">${esc(p ? TYPES[p.type] : '')}</span><span class="sub">${esc(subText(it))}</span><span class="badges">${badgesHtml(c, it)}</span></button>
+    <input class="amt${it.est ? ' est' : ''}" type="number" step="0.01" min="0" inputmode="decimal" data-f="amount" value="${it.amount ? Number(it.amount).toFixed(2) : ''}" placeholder="0.00" aria-label="Amount">
     <select class="st" data-f="status" aria-label="Status">${Object.entries(STATUS).map(([v, l]) => `<option value="${v}" ${v === it.status ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <select class="via" data-f="paidVia" aria-label="Paid with">${viaOptions(it.paidVia || 'bank')}</select>
     <input class="note" data-f="note" value="${esc(it.note)}" placeholder="Note" aria-label="Note">
@@ -474,11 +583,12 @@ function newCyclePanel() {
   const d = todayISO();
   return `<form class="panel" data-form="newCycle">
     <h3>Start a new cycle</h3>
-    <p class="muted">Creates a row for every active payee, with fixed amounts filled in.</p>
+    <p class="muted">Creates a row for every active payee. Fixed amounts are filled in; finished instalment plans are left out.</p>
     <div class="row">
       <label>Payment date<input type="date" name="date" value="${d}" required></label>
       <label>Covers month<input type="month" name="forMonth" value="${guessForMonth(d)}" required></label>
     </div>
+    <label class="inline check"><input type="checkbox" name="prefill" checked> Pre-fill varying bills with last cycle’s amount (marked “est.”)</label>
     <div class="row"><button class="primary">Create cycle</button><button type="button" class="ghost" data-act="closePanel">Cancel</button></div>
   </form>`;
 }
@@ -502,6 +612,7 @@ function viewCycle() {
     <div class="meta">
       <label>Paid on <input type="date" data-cf="date" value="${c.date}"></label>
       <label>Covers <input type="month" data-cf="forMonth" value="${c.forMonth}"></label>
+      <label>Income <input type="number" step="0.01" min="0" inputmode="decimal" data-cf="income" value="${c.income ?? ''}" placeholder="optional"></label>
       <button class="ghost danger sm" data-act="delCycle">Delete cycle</button>
     </div>
   </details>
@@ -536,6 +647,29 @@ function chartSvg(points) {
   }).join('');
   return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Totals per cycle"><line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"></line>${bars}</svg>`;
 }
+function yearHtml() {
+  const years = [...new Set(S.data.cycles.map(c => c.forMonth.slice(0, 4)))].sort().reverse();
+  if (!years.length) return '';
+  const year = years.includes(S.year) ? S.year : years[0];
+  const y = yearStats(year);
+  const maxType = Math.max(1, ...Object.values(y.byType));
+  const avg = y.cyc.length ? y.total / y.cyc.length : 0;
+  return `<section class="card">
+    <div class="cardhead"><h2>${esc(year)} summary</h2>${years.length > 1 ? `<select id="yearSel" aria-label="Year">${years.map(v => `<option ${v === year ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}</div>
+    <div class="stats ystats">
+      <div class="stat"><div class="k">Bills total</div><div class="v">${money(y.total)}</div><div class="s">${y.cyc.length} cycles</div></div>
+      <div class="stat"><div class="k">Average cycle</div><div class="v">${money(avg)}</div><div class="s">per payday</div></div>
+      ${y.incomeN ? `<div class="stat ok"><div class="k">Income recorded</div><div class="v">${money(y.income)}</div><div class="s">${y.incomeN} cycles</div></div>
+      <div class="stat"><div class="k">Left after bills</div><div class="v">${money(y.income - y.cyc.filter(c => c.income).reduce((s, c) => s + cycleTotals(c).total, 0))}</div><div class="s">in cycles with income</div></div>` : ''}
+    </div>
+    <h3>By type</h3>
+    <div class="tbars">${Object.entries(y.byType).sort((a, b) => b[1] - a[1]).map(([t, v]) => `<div class="tbar"><span class="tl">${esc(TYPES[t] || t)}</span><progress max="${maxType}" value="${v}"></progress><span class="tv">${money(v)}</span><span class="tp">${y.total ? Math.round(v / y.total * 100) : 0}%</span></div>`).join('')}</div>
+    <h3>By payee</h3>
+    <table class="ptbl"><thead><tr><th>Payee</th><th class="r">Total</th><th class="r hide-sm">Times</th><th class="r">Average</th><th class="r hide-sm">Highest</th></tr></thead>
+    <tbody>${y.byPayee.map(r => `<tr><td>${esc(r.p.name)}</td><td class="r">${money(r.total)}</td><td class="r hide-sm">${r.n}</td><td class="r">${money(r.total / r.n)}</td><td class="r hide-sm">${money(r.max)}</td></tr>`).join('')}</tbody></table>
+    ${y.unusual.length ? `<h3>Unusually high amounts</h3><ul class="unusual">${y.unusual.sort((a, b) => b.c.date.localeCompare(a.c.date)).map(u => `<li><button class="link" data-act="openCycle" data-id="${u.c.id}">${fmtDate(u.c.date)}</button> <b>${esc(u.p.name)}</b> ${money(u.it.amount)} <span class="badge bad">▲ ${u.pct}%</span> <span class="muted">usual ~${money(u.base)}</span></li>`).join('')}</ul>` : ''}
+  </section>`;
+}
 function viewHistory() {
   const cycles = sortedCycles();
   const asc = cycles.slice(0, 12).reverse();
@@ -548,7 +682,7 @@ function viewHistory() {
   });
   const all = cycles.reduce((s, c) => s + cycleTotals(c).total, 0);
   const avg = cycles.length ? all / cycles.length : 0;
-  return `<section class="card">
+  return `${yearHtml()}<section class="card">
     <div class="cardhead"><h2>${pid ? esc(payee(pid)?.name || '') : 'Total per cycle'}</h2>
       <select id="chartPayee" aria-label="Chart for"><option value="">All payees</option>${sortedPayees().map(p => `<option value="${p.id}" ${p.id === pid ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
     ${chartSvg(points)}
@@ -561,17 +695,29 @@ function viewHistory() {
     <tbody>${cycles.map(c => { const t = cycleTotals(c); return `<tr><td>${fmtDate(c.date)}</td><td>${fmtMonth(c.forMonth)}</td><td class="r">${money(t.total)}</td><td class="r">${money(t.paid)}</td><td class="r ${t.pendingN ? 'warnt' : ''}">${t.pendingN ? `${t.pendingN} · ${money(t.pending)}` : '—'}</td><td><button class="ghost sm" data-act="openCycle" data-id="${c.id}">Open</button></td></tr>`; }).join('') || '<tr><td colspan="6" class="muted">No cycles yet.</td></tr>'}</tbody></table>
   </section>`;
 }
+function payeeHint(p) {
+  const bits = [];
+  if (p.dueDay) { const sfx = ['th', 'st', 'nd', 'rd'], v = p.dueDay % 100; bits.push(`Due on the ${p.dueDay}${sfx[(v - 20) % 10] || sfx[v] || sfx[0]}`); }
+  const pl = planInfo(p); if (pl) bits.push(pl.remaining ? `Instalments: ${pl.done} of ${pl.months} paid, ends ${fmtMonth(pl.end)}` : `Instalments finished (${pl.months})`);
+  return `<span class="phint">${esc(bits.join(' · '))}</span>`;
+}
 function viewPayees() {
   const ps = sortedPayees();
   return `<section class="card">
     <div class="cardhead"><h2>Payees</h2><span class="muted">Active payees are added automatically to each new cycle.</span></div>
     <div class="prow head"><span>Name</span><span>Type</span><span>Fixed amount</span><span>Active</span><span></span></div>
-    ${ps.map((p, i) => `<div class="prow" data-pid="${p.id}">
+    ${ps.map((p, i) => `<div class="prow${S.openPayee === p.id ? ' open' : ''}" data-pid="${p.id}">
       <input class="pname" data-pf="name" value="${esc(p.name)}" aria-label="Name">
       <select class="ptype" data-pf="type" aria-label="Type">${Object.entries(TYPES).map(([v, l]) => `<option value="${v}" ${v === p.type ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <input class="pamt" data-pf="defaultAmount" type="number" step="0.01" min="0" value="${p.defaultAmount ?? ''}" placeholder="varies" aria-label="Fixed amount">
       <label class="switch"><input type="checkbox" data-pf="active" ${p.active ? 'checked' : ''}><span>${p.active ? 'Active' : 'Off'}</span></label>
-      <span class="btns"><button class="icon" data-act="pUp" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button><button class="icon" data-act="pDown" ${i === ps.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button><button class="icon del" data-act="pDel" aria-label="Delete">×</button></span>
+      <span class="btns"><button class="icon" data-act="pUp" ${i === 0 ? 'disabled' : ''} aria-label="Move up">↑</button><button class="icon" data-act="pDown" ${i === ps.length - 1 ? 'disabled' : ''} aria-label="Move down">↓</button><button class="icon more" data-act="pMore" aria-label="Due day and instalments" aria-expanded="${S.openPayee === p.id}">⋯</button><button class="icon del" data-act="pDel" aria-label="Delete">×</button></span>
+      ${payeeHint(p)}
+      <div class="pmore">
+        <label>Due day of month<input data-pf="dueDay" type="number" min="1" max="31" inputmode="numeric" value="${p.dueDay ?? ''}" placeholder="e.g. 28"></label>
+        <label>Instalments (number of months)<input data-pf="planMonths" type="number" min="1" max="360" inputmode="numeric" value="${p.plan?.months ?? ''}" placeholder="none"></label>
+        <label>First instalment month<input data-pf="planStart" type="month" value="${p.plan?.start ?? ''}"></label>
+      </div>
     </div>`).join('') || '<p class="muted">No payees yet.</p>'}
     <form class="addrow" data-form="addPayee">
       <input name="name" placeholder="New payee name" required>
@@ -601,6 +747,17 @@ function viewSettings() {
     <p class="muted">In the sheet, select columns A to E (date, payee, amount, note, status) for all rows, copy, and paste below.</p>
     ${S.importPreview ? importPreviewHtml() : `<textarea id="importText" rows="7" placeholder="1-Jan-2026&#9;Credit card&#9;AED 1,000.00&#9;note&#9;DONE"></textarea>
     <div class="row"><button class="ghost" data-act="importPreview">Preview import</button></div>`}
+  </section>
+  <section class="card">
+    <h2>Reminders</h2>
+    <p class="muted">Set due days on payees (Payees → ⋯). Then download a calendar file and open it on your phone to add monthly reminders, 2 days and 1 day before each due date.</p>
+    <label class="inline">Payday reminder on day <input id="paydayDay" class="narrow" type="number" min="1" max="31" inputmode="numeric" value="${(S.data.settings || {}).paydayDay ?? ''}" placeholder="—"> of each month</label>
+    <div class="row"><button class="ghost" data-act="ics">Download calendar reminders (.ics)</button></div>
+    <p class="fine">The calendar file contains payee names and due days only, no amounts. Download it again after changing due days. Re-importing updates the existing events instead of duplicating them.</p>
+  </section>
+  <section class="card">
+    <h2>Install on your phone</h2>
+    <p class="muted">iPhone: open this site in Safari → Share → <b>Add to Home Screen</b>. Android: Chrome menu → <b>Install app</b>. It then opens full-screen, and works offline from the encrypted copy on the phone; changes sync when you are back online.</p>
   </section>
   <section class="card">
     <h2>Storage</h2>
@@ -649,7 +806,13 @@ async function onSubmit(e) {
     case 'unlock': await withBusy(form, 'Unlocking…', async () => { await doUnlock(f.pw); S.view = 'cycle'; render(); resetLockTimer(); }); break;
     case 'newCycle': {
       if (S.data.cycles.some(c => c.date === f.date) && !confirm('A cycle with this date already exists. Create another one?')) return;
-      const c = { id: uid(), date: f.date, forMonth: f.forMonth, items: sortedPayees().filter(p => p.active).map(p => ({ id: uid(), payeeId: p.id, amount: p.defaultAmount || 0, status: 'pending', paidVia: 'bank', note: '' })) };
+      const prefill = !!f.prefill;
+      const payees = sortedPayees().filter(p => p.active).filter(p => { const pl = planInfo(p); return !pl || (pl.remaining > 0 && pl.start <= f.forMonth); });
+      const c = { id: uid(), date: f.date, forMonth: f.forMonth, items: payees.map(p => {
+        let amount = p.defaultAmount || 0, est = false;
+        if (!amount && prefill) { amount = lastAmount(p); est = amount > 0; }
+        return { id: uid(), payeeId: p.id, amount, est, status: 'pending', paidVia: 'bank', note: '' };
+      }) };
       S.data.cycles.push(c); S.cycleId = c.id; S.panel = null; markDirty(); render(); break;
     }
     case 'addItem': {
@@ -713,6 +876,16 @@ async function onClick(e) {
     case 'delCycle': {
       const c = currentCycle(); if (!c || !confirm(`Delete the cycle paid on ${fmtDate(c.date)}? This cannot be undone.`)) return;
       S.data.cycles = S.data.cycles.filter(x => x.id !== c.id); S.cycleId = null; markDirty(); render(); break;
+    }
+    case 'pMore': {
+      const id = prow.dataset.pid; S.openPayee = S.openPayee === id ? null : id;
+      document.querySelectorAll('.prow.open').forEach(r => { if (r !== prow) r.classList.remove('open'); });
+      prow.classList.toggle('open', S.openPayee === id); b.setAttribute('aria-expanded', String(S.openPayee === id)); break;
+    }
+    case 'ics': {
+      const { text, count } = buildIcs();
+      if (!count && !(S.data.settings || {}).paydayDay) { alert('Set a due day on at least one payee (Payees → ⋯), or a payday day, first.'); return; }
+      download('bills-reminders.ics', text, 'text/calendar'); break;
     }
     case 'toggleItem': {
       const row = b.closest('.item'); const id = row.dataset.item;
@@ -788,21 +961,28 @@ function onChange(e) {
   if (el.name === 'date' && el.form && el.form.dataset.form === 'newCycle') { if (el.value) el.form.elements.forMonth.value = guessForMonth(el.value); return; }
   if (el.id === 'cycleSelect') { S.cycleId = el.value; render(); return; }
   if (el.id === 'chartPayee') { S.chartPayee = el.value; render(); return; }
+  if (el.id === 'paydayDay') { const v = parseInt(el.value, 10); S.data.settings = S.data.settings || {}; S.data.settings.paydayDay = v >= 1 && v <= 31 ? v : null; el.value = S.data.settings.paydayDay ?? ''; markDirty(); return; }
+  if (el.id === 'yearSel') { S.year = el.value; render(); return; }
   if (el.id === 'autoLock') { S.cfg.autoLockMin = Number(el.value); saveCfg(); resetLockTimer(); return; }
   if (el.dataset.cf) {
-    const c = currentCycle(); if (!c || !el.value) return;
-    c[el.dataset.cf] = el.value; markDirty(); render(); return;
+    const c = currentCycle(); if (!c) return;
+    if (el.dataset.cf === 'income') c.income = el.value === '' ? null : round2(el.value);
+    else { if (!el.value) return; c[el.dataset.cf] = el.value; }
+    markDirty();
+    if (el.dataset.cf === 'income') document.getElementById('summary').innerHTML = summaryHtml(c); else render();
+    return;
   }
   if (el.dataset.f) {
     const row = el.closest('.item'); const c = cycleById(row.dataset.cycle); const it = c.items.find(i => i.id === row.dataset.item);
     const f = el.dataset.f;
     if (f === 'done') it.status = el.checked ? 'done' : 'pending';
-    else if (f === 'amount') { it.amount = round2(el.value); el.value = it.amount ? it.amount.toFixed(2) : ''; if (it.amount > 0 && it.status === 'na') it.status = 'pending'; }
+    else if (f === 'amount') { it.amount = round2(el.value); delete it.est; el.classList.remove('est'); el.value = it.amount ? it.amount.toFixed(2) : ''; if (it.amount > 0 && it.status === 'na') it.status = 'pending'; }
     else if (f === 'status') it.status = el.value;
     else if (f === 'paidVia') it.paidVia = el.value;
     else if (f === 'note') it.note = el.value.trim();
     row.className = 'item st-' + it.status + (S.openItem === it.id ? ' open' : '');
     row.querySelector('.sub').textContent = subText(it);
+    row.querySelector('.badges').innerHTML = badgesHtml(c, it);
     row.querySelector('[data-f=done]').checked = it.status === 'done';
     row.querySelector('[data-f=status]').value = it.status;
     document.getElementById('summary').innerHTML = summaryHtml(c);
@@ -814,6 +994,14 @@ function onChange(e) {
     else if (f === 'type') p.type = el.value;
     else if (f === 'defaultAmount') p.defaultAmount = el.value === '' ? null : round2(el.value);
     else if (f === 'active') { p.active = el.checked; el.nextElementSibling.textContent = p.active ? 'Active' : 'Off'; }
+    else if (f === 'dueDay') { const v = parseInt(el.value, 10); p.dueDay = v >= 1 && v <= 31 ? v : null; el.value = p.dueDay ?? ''; }
+    else if (f === 'planMonths') {
+      const v = parseInt(el.value, 10);
+      if (v >= 1) { p.plan = { months: v, start: p.plan?.start || todayISO().slice(0, 7) }; el.closest('.prow').querySelector('[data-pf=planStart]').value = p.plan.start; }
+      else delete p.plan;
+    }
+    else if (f === 'planStart') { if (p.plan && el.value) p.plan.start = el.value; }
+    const hint = el.closest('.prow').querySelector('.phint'); if (hint) hint.outerHTML = payeeHint(p);
     markDirty();
   }
 }
@@ -831,6 +1019,10 @@ function init() {
   ['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, resetLockTimer, { passive: true }));
   document.addEventListener('visibilitychange', () => { if (document.hidden && S.dirty) save(); });
   window.addEventListener('beforeunload', e => { if (S.dirty || S.saving) { save(); e.preventDefault(); e.returnValue = ''; } });
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* offline support is optional */ });
+  }
+  window.addEventListener('online', () => { if (S.key && S.dirty && !S.conflict) save(); });
   let wasNarrow = isNarrow();
   window.addEventListener('resize', () => { const n = isNarrow(); if (n !== wasNarrow) { wasNarrow = n; if (S.key && S.view === 'history') render(); } });
   render();

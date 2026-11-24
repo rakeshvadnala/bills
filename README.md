@@ -49,6 +49,25 @@ Go to **Settings → Import**. Paste rows copied from a sheet with five columns:
 2. Enter the amounts and tick each item as you pay it. Set **Paid with** to a card if a bill was charged to one. Then *Paid from bank* shows real cash out, and card-paid bills aren't counted twice.
 3. Changes save automatically, encrypted, about a second after each edit. If two devices edit at once, you're asked which version to keep.
 
+## Reminders, instalments and insights
+
+- **Due dates.** Set a due day per payee (Payees → ⋯). Pending items then show *Due in 3d* or *Overdue* badges. **Settings → Download calendar reminders** creates an `.ics` file with monthly events and alerts 2 days and 1 day before each due date, plus an optional payday reminder. The file holds payee names and days only, no amounts.
+- **Pre-fill.** A new cycle copies each varying bill's amount from the previous cycle, marked *est.* until you edit it.
+- **Instalments.** Set the number of months and the first month on a payee. Each row shows *3 of 12*, and the payee is left out of new cycles once the plan is finished.
+- **Income.** Optionally enter it per cycle (Cycle details) to see *Left after bills*.
+- **Insights tab.**
+  - Year totals by type and by payee.
+  - Amounts more than 25% above a payee's usual amount, which is the median of its last 6.
+  - Totals per cycle.
+
+## Install as an app
+
+The site is a Progressive Web App:
+- **iPhone:** Safari → Share → *Add to Home Screen*.
+- **Android:** Chrome → *Install app*.
+
+It opens full-screen and works offline from the encrypted copy on the device, and changes sync when you're back online. The service worker caches only the app files; it never caches the encrypted vault or GitHub API calls.
+
 ## Backups
 
 - **Download encrypted backup** saves a copy of the vault file. To restore, commit it back to the data repo.
@@ -62,5 +81,6 @@ Go to **Settings → Import**. Paste rows copied from a sheet with five columns:
 | `index.html` | Page shell and Content Security Policy |
 | `app.js` | Encryption, GitHub sync, import and UI |
 | `style.css` | Styling (light and dark) |
-| `logo.svg`, `apple-touch-icon.png` | App icon |
+| `logo.svg`, `apple-touch-icon.png`, `icon-*.png` | App icons |
+| `manifest.webmanifest`, `sw.js` | Install-as-app and offline support |
 | `CNAME` | Custom domain for GitHub Pages |
